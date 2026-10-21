@@ -1,0 +1,104 @@
+# MVLearn testing — handoff summary (session 2)
+
+## Goal
+Smoke + regression automation (Playwright, JS/ESM) for MVLearn, then k6 performance tests.
+This chat is for research and decisions. Implementation happens in separate chats using
+prompts stored in the project.
+
+## Key files (d:\MVLearn)
+- docs/regression-prompts.md: implementation prompts P3–P6 (copy each into a new chat)
+- docs/scorm-notes.md: verified facts about the SCORM player from P3 (these override the
+  prompts where they differ)
+- docs/scorm-recording.js: codegen recording of the player (password masked)
+- tests/smoke/: S1–S12 (done, passing)
+- tests/pages/ (incl. ScormPlayer.js), tests/helpers/ (accounts.js, scormApi.js),
+  tests/data/ (site.js chooses dev/staging values by BASE_URL; quiz-answers.js)
+- tests/regression/scorm.spike.spec.js (@spike, the P3 trial test)
+
+## Application
+- Moodle 4.x (Boost). Dev: dev-mvlearn.verificient.com (current target).
+  Staging: st-mvlearn.verificient.com.
+- Course "License Renewal Course" (dev; staging spells it "Renwal"). The course page link
+  "Begin Course (English)" opens the SCORM player in the same tab.
+- SCORM = Articulate Storyline 360, SCORM 1.2 (window.API), in one iframe
+  `iframe[title="Driver's License Renewal Course"]`.
+- 7 sections: Managing Your Speed, Turning and Passing, Right-of-Way, Alcohol and Drugs,
+  Protecting Yourself and Your Passengers, Law Enforcement Stops, Signs.
+  Each section = slides + "End of Section Quiz" + "End". Menu shows visited ✓ / locked 🔒;
+  locked items can't be opened.
+- Player behaviour (from scorm-notes.md):
+  - Most slides AUTO-ADVANCE when their audio ends (drift risk: exit promptly).
+  - "next" is disabled via aria-disabled.
+  - Some slides have an in-slide CONTINUE button (needs force click).
+  - Progress saves (POST datamodel.php) about once a minute.
+  - lesson_location is unused; suspend_data holds the bookmark.
+  - Relaunch shows a Resume/Restart dialog. Resume works.
+  - ⭐ Restart resets BOTH the bookmark and the menu ticks/locks.
+- Quiz: "BEGIN QUIZ"; 4–5 single-choice questions in section 1 (buttons "A. …", "B. …",
+  "C. …").
+  - Correct → "Correct!" + Continue.
+  - Wrong → "Incorrect." with two options:
+    - Try Again → same question.
+    - Continue → modal "exit the quiz and restart the module" → review slide → slides →
+      back to the quiz.
+  - Section done → "End of Section … Congratulations! The lesson on Managing Your Speed is
+    complete."
+  - Section 2 has drag-and-drop practice (drag the red car into lane 1, Submit).
+  - Known answer: Q1 "Basic speed law says…" → B. The rest of the key is to be built
+    manually or by P6's discovery mode (QUIZ_DISCOVER=1, tries A/B/C via Try Again).
+
+## Decisions
+- Smoke is final at S1–S12. S13 (SCORM launch) moved to regression (RF1 + RF7).
+- Smoke = "is it alive?" (shallow, read-only). Regression = "did anything break?"
+  (deep, superset of smoke).
+- Run order: smoke → regression → k6.
+- Regression groups:
+  - A login/session, B Dashboard, C My courses, D header, E course page (main account,
+    read-only, restore changed preferences)
+  - F repeatable SCORM (main account; always Restart, few slides, never the quiz)
+  - S session timeout (simulated by clearing cookies)
+  - G SCORM full: quiz, completion, drag and drop. Slow, tagged @scorm-full, separate
+    command.
+- Optional checks: only session timeout. Accessibility, cross-browser and mobile were
+  dropped.
+- Main account (APP_*) is also used for SCORM group F.
+- Flakiness: proposed a P7 "flake hardening" step (test:flaky script with
+  --repeat-each=3 --retries=0, retries flag tests as "flaky", @quarantine tag; group G
+  never repeated). Not yet added.
+
+## Status
+- P1/P2 (foundation + smoke) ✅
+- P3 (SCORM building blocks + trial test) ✅ → docs/scorm-notes.md
+- P4 (groups A–E) ⏳ not run. Prompt ready.
+- P5 (group F + session) ⏳ not run. Prompt ready; must use scorm-notes.md (auto-advance,
+  title from #slide-label, ignore the "play() interrupted by pause()" pageerror).
+- P6 (group G) ⏳ prompt needs updating (see below).
+- k6 ⏳ later.
+
+## Open problem: only ONE fresh account for group G
+- P6 currently assumes a pool of several accounts. Options discussed:
+  1. Admin deletes the user's SCORM attempts after each run (SCORM activity → Reports →
+     Delete selected attempts).
+  2. Create more accounts.
+  3. One account moving forward one section per run.
+- ⭐ NEW from P3: Restart resets the bookmark and the locks. This may make group G
+  repeatable on ONE account without admin help (Restart → play section 1 → quiz again).
+  To verify: after a section is completed, does Restart still re-lock everything, and does
+  Moodle's lesson_status/completion stay "completed" (fine, but tests must not expect
+  "incomplete")?
+- Next step: verify that, then rewrite P6 for a single account (Restart-based, admin reset
+  as fallback).
+
+## Performance test (k6) plan
+- k6 virtual users need real accounts. For realistic SCORM load: about 200 accounts
+  created by an admin via Moodle "Upload users" CSV, enrolled in the course, on staging
+  only.
+- Reset progress before each run (Course reset), delete the accounts afterwards.
+- k6 replays the HTTP requests (login with logintoken + MoodleSession cookie, player load,
+  datamodel.php saves); it doesn't run the Storyline content.
+- Regression RA8 will reveal whether Moodle limits concurrent logins per user.
+
+## Still open
+- Who can do admin tasks on dev/staging (bulk users, delete SCORM attempts)?
+- Fill the section 1 answer key (manually or via discovery mode).
+- Add P7 flake hardening?

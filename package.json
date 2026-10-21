@@ -1,0 +1,35 @@
+{
+  "name": "mvlearn",
+  "type": "module",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:debug": "playwright test --debug",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:regression": "playwright test --grep @regression",
+    "test:scorm-full": "playwright test --project=user --no-deps --grep @scorm-full --workers=1",
+    "user:smoke": "playwright test --project=user --grep @smoke",
+    "user:regression": "playwright test --project=user --grep @regression",
+    "manager:smoke": "playwright test --project=manager --grep @smoke",
+    "manager:regression": "playwright test --project=manager --grep @regression",
+    "load:probe": "node scripts/run-load-probe.js",
+    "load:summary": "node scripts/load-probe-summary.js",
+    "load:k6": "node scripts/run-k6.js",
+    "load:hybrid": "node scripts/run-hybrid.js",
+    "staging:smoke":"node scripts/run-target.js staging --grep @smoke",
+    "staging:regression": "node scripts/run-target.js staging --grep @regression"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.4"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.5"
+  }
+}

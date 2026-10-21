@@ -1,0 +1,29 @@
+# Load-test image for a GCP VM (or any Linux machine with Docker): Playwright + Chromium + k6 + this
+# project. Runs the same scripts as on Windows: npm run load:probe / load:k6 / load:hybrid.
+# Build and run with scripts/gcp/load.sh; see docs/load-test.md ("Running on GCP").
+#
+# Never contains credentials: .env is excluded by .dockerignore and passed at run time
+# (docker run --env-file .env). Results are written to /app/test-logs, mounted from the VM's disk.
+
+# Must match @playwright/test in package.json (1.63.0), so the bundled Chromium is the one it expects.
+ARG PLAYWRIGHT_VERSION=1.63.0
+ARG K6_VERSION=1.7.1
+
+FROM grafana/k6:${K6_VERSION} AS k6
+
+FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble
+COPY --from=k6 /usr/bin/k6 /usr/bin/k6
+
+WORKDIR /app
+# Dependencies first, so code changes do not reinstall them.
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY . .
+
+# Headless Linux Chromium; results and saved sessions go to mounted folders.
+ENV CI= \
+    PLAYWRIGHT_HTML_OPEN=never
+
+# Default: show what is available. scripts/gcp/load.sh passes the real command.
+CMD ["sh", "-c", "k6 version && npx playwright --version && echo 'Run: npm run load:probe | load:k6 | load:hybrid'"]

@@ -1,0 +1,62 @@
+C:\Users\2000049\.claude\plans\here-i-will-be-swirling-yao.md
+
+
+MVLearn Playwright project: handoff summary
+Project: D:\MVLearn, Playwright (JS, ESM) tests for a Moodle 4.x LMS.
+Target environment: DEV, https://dev-mvlearn.verificient.com. The original plan said staging, but the user switched .env to dev and confirmed dev. The .env keys are BASE_URL, APP_USERNAME and APP_PASSWORD. Never print, log or edit credentials.
+
+Done (Phases 1 and 2)
+Deleted: tests/example.spec.js, tests/fixtures/auth.js, tests/smoke.spec.js.
+Moved: tests/.env.example to the root .env.example, with the keys BASE_URL, APP_USERNAME, APP_PASSWORD, FRESH_USERNAME and FRESH_PASSWORD.
+
+Created or changed:
+
+playwright.config.js:
+fails fast if a required env var is missing, and strips the trailing slash from BASE_URL
+two projects: setup (*.setup.js) and chromium (storageState playwright/.auth/user.json, depends on setup)
+list and html reporters; trace and video retained on failure, screenshot only on failure
+tests/auth.setup.js logs in once and saves the session. playwright/.auth/ is gitignored.
+tests/data/site.js holds the dev values: course "License Renewal Course", id 2, teacher "Admin User", English SCORM id 2.
+tests/pages/ has LoginPage, Header, FrontPage, DashboardPage, MyCoursesPage, CoursePage and ScormPage. All locators use getByRole/getByLabel and were verified against the live dev site.
+tests/smoke/, every test tagged @smoke:
+public.spec.js (logged out): S1 front page, S2 login form, S3 no JS errors or same-origin ≥400 responses
+auth.spec.js (each test logs in on its own): S4 login via header link, S5 login via course card returns to /course/view.php?id=2, S6 wrong password shows an error, S7 logout then /my/ redirects to login
+navigation.spec.js (shared session): S8 Home tab, S9 Dashboard tab, S10 My courses tab, S11 user menu, notifications popover and messaging drawer open and close
+course.spec.js: S12 course page, checking the English link's href without clicking it. S13 is test.fixme (parked).
+package.json adds the scripts test:smoke and test:regression.
+Where the dev site differs from the original (staging) facts
+Course name: "License Renewal Course" on dev, "Renwal" on staging. Teacher: "Admin User" on dev, "Mvlearn Admin" on staging.
+Site name and title: "Dev MVLearn" / "Home | DMVLearn". Staging titles are "… | STMV" and don't match /MVLearn/i.
+Dashboard: no "Recently accessed items" block on dev. The regions are Main content blocks, Timeline and Calendar.
+Course page: has language cards instead of an "English" activity link. The links read "Begin Course (English)" or "Continue (English)" depending on progress. The SCORM ids are 2/3/4 on dev and 6/7/8 on staging.
+Header (verified):
+menu "User" → menuitem "Log out"
+dialog "Notification window"
+a dialog with heading "Messaging", closed with its "Close" link
+Logout lands on the front page, and /my/ then redirects to /login/index.php. This matches the original facts.
+Open issues
+S13 is parked. On staging, /mod/scorm/view.php?id=6 redirects straight into the SCORM player and has no "Enter" button, so just visiting it launches the package. It can't be a read-only check, so it stays test.fixme until the SCORM phase. The exploration did open the staging English SCORM once by accident; that course was already at 100%.
+S11 is flaky under parallel load. It passed in the CLI run and 7/7 times in isolation, but failed once in UI mode at 32.7s. The suspected cause is the 30s test timeout on a slow dev server, where a single login takes 14–21s. Next step: confirm the error in UI mode (S11 → Errors tab). If it's Test timeout of 30000ms exceeded, add timeout: 60_000 to playwright.config.js.
+The flake check hasn't been run yet: npx playwright test --grep @smoke --repeat-each=3. S6 does one failed login per repeat, which is fine at 3.
+Concurrent-login limits: no session invalidation seen so far. If parallel workers cause it, report it and lower workers rather than hiding it.
+Last results
+npm run test:smoke gave 13 passed, 1 skipped (S13) in 1.3 minutes.
+
+Notes on how we worked
+Exploration scripts lived in a temporary scratchpad outside the project. They only read the live pages to confirm element names.
+Out of scope so far: regression tests, SCORM launch, and k6 performance testing. k6 will need HTTP-level details such as Moodle's logintoken and sesskey, not UI selectors, and load tests need sign-off from whoever owns the environment.
+
+
+## Extra facts (from the Phase 1–2 implementation handoff, docs/handoff-phase1-2.md)
+- Staging page titles end in "| STMV" → smoke S1's /MVLearn/i title check fails on staging.
+  Dev titles are "… | DMVLearn".
+- Dev Dashboard has NO "Recently accessed items" block (regions: Main content blocks,
+  Timeline, Calendar). P4's RB5 must skip on dev.
+- Course page launch link reads "Begin Course (English)" or "Continue (English)" depending
+  on progress; there are other language versions. SCORM ids: dev 2/3/4, staging 6/7/8.
+- Dev is slow: one login takes 14–21 s. S11 once exceeded the 30 s test timeout →
+  consider timeout: 60_000. Smoke flake check (--repeat-each=3) not yet run.
+- Main account's staging course progress is already 100% (opened by accident).
+- No concurrent-login session kills seen so far.
+- Outdated in that handoff: site.js dev-only, S13 test.fixme, FRESH_* env keys
+  (all changed by P3).

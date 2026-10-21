@@ -1,0 +1,100 @@
+MVLearn Playwright project: handoff summary (after P3)
+Project: d:\MVLearn, Playwright tests (JavaScript, ESM) for MVLearn, a Moodle 4.x learning site.
+Target: the DEV site, https://dev-mvlearn.verificient.com.
+Plan: docs/regression-prompts.md holds prompts P3 → P4 → P5 → P6, one new chat per prompt.
+
+Ground rules (still apply)
+Never print, log or hardcode credentials, and never edit .env. Tell the user what to add instead.
+.env currently has only BASE_URL, APP_USERNAME and APP_PASSWORD.
+Keep smoke tests unchanged. npm run test:smoke must keep passing.
+SCORM safety: the test account must never reach the quiz.
+Never press "BEGIN QUIZ".
+Always choose "Restart" at the Resume/Restart prompt.
+Check every selector on the live site, prefer getByRole, and never use waitForTimeout.
+Before this chat (Phases 1–2)
+Setup:
+playwright.config.js has a setup project that logs in once and saves playwright/.auth/user.json.
+The chromium project reuses that saved login.
+There are page objects in tests/pages/.
+Smoke tests S1–S12 in tests/smoke/, tagged @smoke, cover public pages, login/logout, header navigation and the course page.
+Done in this chat: P3 (preparation for the SCORM lesson player)
+Files created
+
+tests/pages/ScormPlayer.js: page object for the Storyline lesson player. Main methods:
+launch(), handleResumePrompt(), waitForSlide()
+currentSlideTitle(), selectedMenuTitle()
+advanceSlide(), goToSlide()
+openMenu() / closeMenu() / openTranscript()
+menuItem(), isLocked() / isVisited() (both take an optional { section }), menuItems()
+exit()
+tests/helpers/accounts.js:
+getScormAccount() uses SCORM_* if set, otherwise the APP account.
+getPoolAccounts() parses SCORM_POOL="u1:p1;u2:p2".
+tests/helpers/scormApi.js: getApiVersion(), getValue(), waitForSave().
+tests/data/quiz-answers.js: answer key, seeded with 'Managing Your Speed': { 'Basic speed law says': 'B' }.
+tests/regression/scorm.spike.spec.js: trial test tagged @spike. It only logs and asserts nothing.
+docs/scorm-notes.md: all spike findings. P5 and P6 must read this; it overrides the original facts.
+Files changed
+
+tests/data/site.js: picks values by BASE_URL hostname (dev or staging) and throws an error for an unknown host. Adds launchLinkName: 'Begin Course (English)'. Staging's course id and launch link are unverified.
+playwright.config.js: --autoplay-policy=no-user-gesture-required in the chromium project.
+package.json: new script test:scorm-full (--grep @scorm-full --workers=1).
+.env.example: added SCORM_USERNAME, SCORM_PASSWORD and SCORM_POOL, with comments.
+tests/smoke/course.spec.js: removed the parked S13.
+Files moved
+
+scorm-recording.js → docs/scorm-recording.js, with the username and password replaced by '***'.
+Key findings (details in scorm-notes.md)
+Player: Storyline in one iframe, iframe[title="Driver's License Renewal Course"], reached via /mod/scorm/player.php. Opening it takes about 15–25 s on dev.
+
+Restart resets both the bookmark and the menu ticks/locks. The prompt appears on every relaunch.
+
+Slides move on by themselves when they finish. In section 1:
+
+only "Welcome" needs "next"
+only "Speed Limits Based on Location" needs its in-slide CONTINUE
+A player left open moves the account forward on its own, so exit promptly. One advanceSlide() call can pass several slides.
+
+Slides take 10–26 s each.
+
+CONTINUE is covered by its drawn picture, so it needs click({ force: true }).
+
+"next" is disabled through aria-disabled="true" plus class cs-disabled. It looks enabled for a split second when the slide changes, so advanceSlide() only trusts it after 1 s and clicks with a 5 s timeout.
+
+Slide title comes from the hidden #slide-label ("slide: <title>"). It can differ from the menu name, e.g. "Basic Speed Law (cont.)" sits under "About Basic Speed Law".
+
+Menu state is the end of each item's accessible name: "X visited", "X locked" or "X visited, locked". Items in collapsed sections are hidden, so isLocked()/isVisited() match on data-slide-title. Titles repeat across sections, so pass { section }. There is a 7th section, "Signs".
+
+Menu button is "Sidebar Toggle" (open by default at desktop size). The tabs are "Menu" and "Transcript".
+
+SCORM 1.2 via window.API:
+
+cmi.core.lesson_location is always empty; the bookmark is cmi.suspend_data.
+cmi.core.lesson_status stays incomplete, and cmi.core.entry is resume.
+Saving:
+
+POST /mod/scorm/datamodel.php happens about once a minute, not per slide.
+"Exit activity" also saves, but Playwright never sees that request.
+Autoplay worked headless and headed. It also worked without the flag, because the Restart click counts as a user gesture.
+
+Harmless error: pageerror: "The play() request was interrupted by a call to pause()" appears on every run. P5's health check (RF11) must ignore it.
+
+Not tested yet: clicking a locked menu item, the player's own "Exit" button, and the Transcript tab.
+
+Results
+npm run test:smoke: 13 passed (setup + S1–S12).
+Spike (npx playwright test --grep "@spike" [--headed]): passed both headless and headed, about 1.5 min each.
+npm run test:regression currently fails with "No tests found", because nothing is tagged @regression until P4.
+A plain npm test also runs the spike, which opens the lesson once.
+Dev account state: the APP account's attempt is incomplete, with the bookmark in section 1 (around "About Basic Speed Law"), far from the quiz.
+Notes and gotchas
+PowerShell: quote tags, e.g. --grep "@spike". Unquoted @spike gets swallowed by PowerShell.
+Scratch scripts (outside the project) were used only for exploration and aren't needed any more.
+What's next
+P4 (regression groups A–E: auth, dashboard, My courses, header, course page) in a new chat. It needs nothing extra.
+P5 (lesson-player tests RF1–RF11 and session test RS1), after P4.
+Optional but recommended: add SCORM_USERNAME/SCORM_PASSWORD for a separate account.
+P6 (quiz, completion, drag and drop), after P5. It needs:
+3–5 fresh accounts in SCORM_POOL
+the section 1 quiz answers in quiz-answers.js (or discovery mode)
+Run P4 and P5 one after the other, not at the same time: both use the main account on dev.

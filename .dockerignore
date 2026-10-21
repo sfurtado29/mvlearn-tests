@@ -1,0 +1,16 @@
+# Keep credentials, local installs and old results out of the load-test image (Dockerfile.load).
+.env
+.env.*
+!.env.example
+node_modules
+playwright/.auth
+playwright/.cache
+test-results
+playwright-report
+blob-report
+test-logs
+docs/evidence
+docs/*.docx
+docs/~$*
+.git
+.vscode

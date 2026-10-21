@@ -1,0 +1,16 @@
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+/test-logs/
+
+.env
+
+# Office lock files (created while a document is open)
+~$*
+
+# Temporary output of quiz discovery mode (copied into tests/data/quiz-answers.js by hand)
+tests/data/quiz-answers.discovered.json
