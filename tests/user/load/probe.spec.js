@@ -4,7 +4,7 @@
 // project ignores it unless LOAD_PROBE_RUN=1 (set by `npm run load:probe`). See docs/load-test.md.
 //
 // Journey: log in → My courses → course page → launch English, Restart → sections 1-7 (all
-// practices, every quiz answered from tests/data/quiz-answers.js, no discovery) → wait for one
+// practices, every quiz answered from tests/data/courses/<v>/quiz-answers.js, no discovery) → wait for one
 // progress save → Exit activity → relaunch, Resume, check it resumes at "End" → Exit → log out.
 import { test, expect } from '@playwright/test';
 import { TARGET } from '../../../target.js';
@@ -16,7 +16,7 @@ import { ScormPlayer } from '../../pages/user/ScormPlayer.js';
 import { ScormQuiz } from '../../pages/user/ScormQuiz.js';
 import { ScormPractice } from '../../pages/user/ScormPractice.js';
 import { COURSE } from '../../data/site.js';
-import { SECTIONS } from '../../data/course-outline.js';
+import { SECTIONS } from '../../data/course.js';
 import { submitLogin } from '../../helpers/login.js';
 import { getValue, waitForSave } from '../../helpers/scormApi.js';
 import { getProbeAccounts } from '../../helpers/accounts.js';

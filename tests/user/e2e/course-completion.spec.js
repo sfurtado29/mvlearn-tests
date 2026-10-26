@@ -14,7 +14,7 @@ import { ScormPlayer } from '../../pages/user/ScormPlayer.js';
 import { ScormQuiz } from '../../pages/user/ScormQuiz.js';
 import { ScormPractice } from '../../pages/user/ScormPractice.js';
 import { COURSE } from '../../data/site.js';
-import { SECTIONS, SECTION_1_SLIDES, QUIZ_MENU_ITEM } from '../../data/course-outline.js';
+import { SECTIONS, SECTION_1_SLIDES, QUIZ_MENU_ITEM } from '../../data/course.js';
 import { submitLogin } from '../../helpers/login.js';
 import { getValue } from '../../helpers/scormApi.js';
 import { getE2EAccount } from '../../helpers/accounts.js';
@@ -107,7 +107,7 @@ test.describe('Course journey (E2E)', { tag: '@scorm-full' }, () => {
   // account named by E2E_ACCOUNT; resumes wherever that account stopped (build-account friendly).
   // QUIZ_DISCOVER=1: unknown questions are tried A, B, C… with "Try Again" after each wrong answer
   // (never "Continue", which sends the learner back to review slides); answers found are saved to
-  // tests/data/quiz-answers.discovered.json.
+  // tests/data/courses/<v>/quiz-answers.discovered.json.
   test('E2E2 pool account: section 1 quiz passed → End of Section → logout', async ({ page }) => {
     const account = getE2EAccount();
     test.skip(!account, 'Set E2E_ACCOUNT=<username from SCORM_POOL>, e.g. the build account');
@@ -191,7 +191,7 @@ test.describe('Course journey (E2E)', { tag: '@scorm-full' }, () => {
 
   // Milestone 3+. PERMANENT for the account. Plays the course from wherever the E2E_ACCOUNT stopped,
   // section by section, until section E2E_UNTIL_SECTION (1-7, default 7) is complete:
-  // quizzes as in E2E2, practice slides through PRACTICE below. A slide with a Submit button that
+  // quizzes as in E2E2, practice slides through tests/data/courses/<v>/practice.js. A slide with a Submit button that
   // has no handler stops the run, with its structure attached, so a handler can be added.
   test('E2E3 pool account: play sections until E2E_UNTIL_SECTION is complete → logout', async ({ page }) => {
     const account = getE2EAccount();

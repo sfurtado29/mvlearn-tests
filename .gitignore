@@ -12,5 +12,8 @@ node_modules/
 # Office lock files (created while a document is open)
 ~$*
 
-# Temporary output of quiz discovery mode (copied into tests/data/quiz-answers.js by hand)
-tests/data/quiz-answers.discovered.json
+# Temporary output of quiz discovery mode (copied into tests/data/courses/<v>/quiz-answers.js by hand)
+tests/data/courses/*/quiz-answers.discovered.json
+
+# Zips made to hand files to colleagues
+/handoff/

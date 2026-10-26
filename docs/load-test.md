@@ -233,6 +233,25 @@ gcloud compute instances delete mvlearn-load --zone=<zone>
 2. The machine check reports the VM's CPU (inside Docker it sees the VM's cores).
 3. Files written into `test-logs` from the container are owned by root on the VM; `sudo chown -R $USER test-logs` if needed.
 
+## Server checks (SSH)
+
+Read-only scripts in `scripts/server/` (no sudo needed, nothing installed or changed, no passwords
+printed):
+
+| Script | Run on | Gives |
+|---|---|---|
+| `moodle-check.sh` | Moodle server | Size, services, PHP-FPM / web server / DB / cache settings, Moodle version and config, cron, limits |
+| `k6-check.sh` | k6 machine | Size, limits, tools, how it reaches the site (private network? timings, headers, route) |
+| `server-monitor.sh start\|stop\|status` | both, during a test | CPU load, memory, PHP-FPM/Apache workers, web and DB connections every 5 s (`~/loadmon/`) |
+
+From PowerShell (`$M` / `$K` = the SSH logins, e.g. `ubuntu@10.0.0.5`; add `-i <key>` if needed):
+```
+scp scripts\server\moodle-check.sh scripts\server\server-monitor.sh "${M}:~/"
+ssh $M "bash ~/moodle-check.sh"
+scp "${M}:~/mvlearn-check-*.txt" test-logs\server\
+```
+Write `"${M}:~/"`, not `"$M:~/"`: PowerShell reads `$M:` as a drive name.
+
 ## The machine check
 
 Many browsers on one PC can make the PC the bottleneck, which slows the timings for reasons that

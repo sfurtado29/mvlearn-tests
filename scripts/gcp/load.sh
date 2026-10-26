@@ -34,7 +34,8 @@ LABEL="${LOAD_STEP:-$MODE}"
 RUN_ID="${LOAD_RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_${LABEL}}"
 mkdir -p test-logs/load test-results
 
-# Pass only the load-test settings that are set; credentials come from .env via --env-file.
+# Pass only the load-test settings that are set; credentials come from .env, mounted read-only and
+# read by dotenv like on Windows (docker --env-file would keep the quotes around quoted values).
 ENV_ARGS=(-e "LOAD_RUN_ID=$RUN_ID")
 for name in TARGET LOAD_PROBES LOAD_STEP LOAD_BASELINE LOAD_K6_VUS LOAD_K6_DURATION LOAD_K6_RAMP \
   LOAD_K6_SESSION_MINUTES LOAD_HYBRID_WARMUP_S LOAD_CPU_LIMIT LOAD_CPU_ABORT; do
@@ -45,7 +46,7 @@ CONTAINER="mvlearn-${RUN_ID//[^a-zA-Z0-9_.-]/-}"
 # --ipc=host: Chromium needs more shared memory than Docker's default 64 MB.
 # --init: forwards signals and reaps the many browser processes.
 docker run -d --name "$CONTAINER" --ipc=host --init \
-  --env-file .env "${ENV_ARGS[@]}" \
+  -v "$(pwd)/.env:/app/.env:ro" "${ENV_ARGS[@]}" \
   -v "$(pwd)/test-logs:/app/test-logs" \
   -v "$(pwd)/test-results:/app/test-results" \
   "$IMAGE" npm run "$SCRIPT" >/dev/null
