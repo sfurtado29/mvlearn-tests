@@ -7,6 +7,23 @@ runs the same probes next to k6 virtual users and compares the two.
 Plan (agreed 2026-10-14): baseline-1, then baseline-10 (dev, browsers only); later the hybrid load
 test with 100 learners = 20 browser probes (20%) + 80 k6 users.
 
+## Course v1 and v2
+
+Dev and staging now run the client's **v2** package (Articulate Rise, SCORM 2004; staging since
+2026-10-27); v1 was Storyline, SCORM 1.2. The site's version is `courseVersion` in
+`tests/data/site.js` (or `COURSE_VERSION`), and the load test follows it:
+
+| | v1 (Storyline) | v2 (Rise) |
+|---|---|---|
+| Browser probe | `tests/user/load/probe.spec.js` | `tests/user/load/probe-v2.spec.js` (the other one skips) |
+| Probe accounts | reused: every run chooses **Restart** | **one run per account**: Rise has no Restart and a completed course cannot be launched again, so every run needs fresh `LOAD_PROBE_POOL` accounts (the probe fails at once on a used one) |
+| Resume check | after the course: relaunch → "End" | after Lesson 01: Exit activity → relaunch → "Introduction: Turning and Passing" |
+| Full course, 1 probe | ~32 min | ~15 min (dev, no load) |
+| k6 saves | SCORM 1.2 elements (`cmi.core.lesson_status`, …) | SCORM 2004 elements (`cmi.completion_status`, `cmi.exit`, `cmi.session_time` "PT60S", `cmi.suspend_data`) |
+
+Everything else (runners, results, summary, hybrid run) is the same. The v2 course itself is
+described in docs/scorm-notes-v2.md.
+
 ## Setup (.env)
 
 ```
@@ -15,8 +32,9 @@ LOAD_PROBES=                                     # optional: run only the first 
 LOAD_ALLOW_HOST=dev-mvlearn.verificient.com      # probes refuse non-staging hosts otherwise
 ```
 
-- Every probe chooses **Restart** in the course, so accounts can be reused run after run. They must
-  not be the APP account or SCORM_POOL accounts.
+- v1: every probe chooses **Restart** in the course, so accounts can be reused run after run.
+  v2: **fresh accounts for every run** (see above). They must not be the APP account or SCORM_POOL
+  accounts.
 - Quote the whole value if a password contains `#`.
 
 ## Run
@@ -55,16 +73,18 @@ Re-summarise any run: `npm run load:summary -- test-logs/load/<run> [--baseline 
 |---|---|
 | login | open login page → Dashboard |
 | open_course | My courses → course page shown |
-| launch | click English → first slide shown (includes choosing Restart) |
-| section_1 … section_7 | time to complete each section |
-| slide | each slide change (mostly narration time) |
-| practice | each practice slide (drag-and-drop, picture/choice questions, tiles) |
-| begin_quiz | BEGIN QUIZ → first question shown |
-| quiz_answer | click an answer → "Correct" shown |
+| launch | click English → first slide shown (v1: includes choosing Restart; v2: START COURSE on the cover) |
+| section_1 … section_7 | time to complete each section (v2: each lesson, up to the end of its quiz) |
+| slide | v1: each slide change (mostly narration time) |
+| practice | v1: each practice slide (drag-and-drop, picture/choice questions, tiles) |
+| begin_quiz | v1: BEGIN QUIZ → first question shown |
+| quiz_answer | v1: click an answer → "Correct" shown |
+| page | v2: each lesson page, first block → next page open (includes required audio: Heat Related Dangers ~1.5 min, What to Do ~2 min) |
 | save | server response time of every POST /mod/scorm/datamodel.php |
-| wait_save | after the course: wait for the next progress save |
+| wait_save | v1: after the course, wait for the next progress save |
+| finish | v2: Conclusion page CONTINUE → EXIT |
 | exit | Exit activity → course page |
-| resume | relaunch → resumed slide shown (must be "End", not Welcome) |
+| resume | relaunch → resumed page shown (v1: must be "End"; v2: must be Lesson 02's first page) |
 | logout | Log out → logged out |
 | journey | whole run |
 
@@ -87,8 +107,25 @@ k6 does not download the course's media/HTML files (the browser probes do).
 LOAD_K6_POOL="k6user1:pass1;k6user2:pass2;..."   # one per VU ideally
 ```
 
+For big pools, put the accounts in a file instead (it replaces `LOAD_K6_POOL`):
+```
+LOAD_K6_POOL_FILE=secrets/k6-accounts.csv
+```
+One account per line: `username,password` in a `.csv` (a `username,password` header line is
+skipped), otherwise `username:password`; blank lines and `#` lines are ignored; no `;` in a
+password. `/secrets/` is git-ignored. k6 reads the file itself (a thousand accounts in one
+environment variable come near Windows' ~32k-character limit), and VU n uses line n, so a 50-user
+run uses the first 50 accounts. Every account must exist on the site and be enrolled in the course;
+one that is not (or that gets a first-login page) shows up as a lower "Login OK" rate.
+
 Separate from `LOAD_PROBE_POOL`, `SCORM_POOL` and the APP account (the runner refuses overlaps):
 k6 overwrites their SCORM progress with filler, so a browser would not resume them sensibly.
+The saves use the SCORM version of the site's course (`SCORM_VERSION` in
+`tests/data/courses/<v>/outline.js`, passed to k6 as `LEARNER_SCORM_VERSION`); `k6-summary.md` shows
+which. The 2004 element names were taken from Moodle's `mod/scorm/datamodels/scorm_13.js` on dev
+(2026-10-27). **First v2 run, staging 2026-10-27** (1 VU, 5 min, sxts_user7): login, player, saves
+(5) and sessions 100% OK; saves 0.47 s median, every request type under 1 s. Not yet checked: the
+filler in the k6 account's SCORM data (Moodle answered "true" to every save).
 
 ### Commands (PowerShell)
 
@@ -131,6 +168,46 @@ all k6 users are already logged in and saving when the browsers start.
 Results in `test-logs/load/<run id>/`: the probe files (as above) plus `k6-summary.md` /
 `k6-summary.json`: per request type count, median, p95, max, time to first byte, error rate; overall
 requests per second; Login / Player / Saves / Sessions OK rates.
+
+### Capacity steps and stress (pure HTTP)
+
+Both use the same k6 learner (login → My courses → course → player → a save every minute →
+logout); only the number of users over time changes. "Pure HTTP finds the limits, hybrid confirms
+that learners can still finish the course within them."
+
+**Capacity steps**: hold each level in turn, to find where response times start rising:
+```
+$env:LOAD_K6_LEVELS='10,25,50,100'; $env:LOAD_K6_LEVEL_HOLD='5m'; npm run load:capacity
+```
+Each level: `LOAD_K6_RAMP` (1m) to reach it, then `LOAD_K6_LEVEL_HOLD` (5m), so 4 levels ≈ 24 min.
+
+**Stress**: levels keep rising until the server breaks; k6 stops itself at the first level whose
+error rate reaches `LOAD_K6_ABORT_ERROR_RATE` (0.1 = 10%) or whose login or player p95 reaches
+`LOAD_K6_ABORT_P95_MS` (10000). **It may take staging down for everyone**: agree a time with the
+server team. It refuses to start without `LOAD_STRESS_CONFIRM=yes`:
+```
+$env:LOAD_STRESS_CONFIRM='yes'; $env:LOAD_K6_STRESS_START='25'; $env:LOAD_K6_STRESS_STEP='25'; $env:LOAD_K6_STRESS_MAX='500'; npm run load:stress
+```
+Each level: 1m ramp + `LOAD_K6_LEVEL_HOLD` (2m for stress). Stopping at a limit is the expected end
+(k6 exit 99); the runner reports it as the breaking point and exits 0.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `LOAD_K6_LEVELS` | capacity: the VU levels | 10,25,50,100 |
+| `LOAD_K6_STRESS_START` / `_STEP` / `_MAX` | stress: the VU levels | 25 / 25 / 500 |
+| `LOAD_K6_LEVEL_HOLD` | time at each level after its ramp | 5m (capacity), 2m (stress) |
+| `LOAD_K6_ABORT_ERROR_RATE` | stress: stop at this error share in a level | 0.1 |
+| `LOAD_K6_ABORT_P95_MS` | stress: stop at this login / player p95 in a level | 10000 |
+| `LOAD_STRESS_CONFIRM` | stress: must be `yes` | – |
+
+`k6-summary.md` then starts with a table per level (requests, requests/s, errors, p50 and p95 of all
+requests, p95 of login, player and save) and three lines: the highest level reached, the highest
+healthy level (below both limits) and the first level whose p95 is over twice the first level's.
+Requests are tagged with the level being held or ramped to, so a level includes its ramp. Peak
+users need accounts: one per VU at the highest level (`LOAD_K6_POOL_FILE`); with fewer, VUs share
+accounts, which is not what real load looks like (the runner warns).
+These two modes have not been run against a site yet (only checked with `k6 inspect`). The GCP
+wrapper (`scripts/gcp/load.sh`) does not have them; on Linux run the npm commands directly.
 
 ## Staging notes (2026-10-21)
 

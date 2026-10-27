@@ -11,47 +11,21 @@ import { Header } from '../../pages/common/Header.js';
 import { MyCoursesPage } from '../../pages/user/MyCoursesPage.js';
 import { RisePlayer } from '../../pages/user/RisePlayer.js';
 import { COURSE } from '../../data/site.js';
-import { COURSE_VERSION, LESSONS, AUDIO_LESSONS, SORTING, answerFor } from '../../data/course.js';
+import { COURSE_VERSION, LESSONS } from '../../data/course.js';
 import { submitLogin } from '../../helpers/login.js';
 import { getScormAccount } from '../../helpers/accounts.js';
-import { getApiVersion, getValue } from '../../helpers/scormApi.js';
+import { FINAL_LESSON, playLessons, scormStatus } from '../../helpers/riseJourney.js';
 
 test.use({ storageState: { cookies: [], origins: [] }, actionTimeout: 60_000 });
-
-// A lesson takes one CONTINUE per block group plus its end button; generous cap per lesson.
-const MAX_STEPS_PER_LESSON = 30;
-// The last page: CONTINUE, then the course is ended with its EXIT button (RisePlayer.finishCourse).
-const FINAL_LESSON = 'Conclusion';
-
-/**
- * The course's SCORM status, whichever API the package uses: 1.2 cmi.core.lesson_status or 2004
- * cmi.completion_status / cmi.success_status, with the API's last error. The v2 package is
- * SCORM 2004 (v1 was 1.2), so cmi.core.lesson_status reads "".
- * @param {import('@playwright/test').Page} page
- */
-async function scormStatus(page) {
-  const version = await getApiVersion(page);
-  const read = (key) => getValue(page, key).catch((error) => `(error: ${error.message})`);
-  const lastError = () =>
-    page.evaluate(() =>
-      window.API ? String(window.API.LMSGetLastError()) : String(window.API_1484_11?.GetLastError() ?? ''),
-    );
-  if (version === '2004') {
-    const completion = await read('cmi.completion_status');
-    return { version, status: completion, success: await read('cmi.success_status'), lastError: await lastError() };
-  }
-  return { version, status: await read('cmi.core.lesson_status'), lastError: await lastError() };
-}
 
 test.describe('Course journey v2 (E2E)', { tag: '@scorm-full' }, () => {
   test.skip(COURSE_VERSION !== 'v2', `the site runs course ${COURSE_VERSION}, not v2`);
   test.describe.configure({ timeout: 60 * 60_000 });
 
   // E2E_UNTIL_LESSON: the last lesson to complete (a LESSONS title; the first one if it repeats),
-  // default the last one known.
-  // Each lesson: scroll to the end, flip any flip cards, answer any questions (key first, else
-  // option by option), press CONTINUE; repeat until the next lesson opens. Audio is never played
-  // (not required). Stops with the visible buttons listed when no CONTINUE shows up.
+  // default the last one, Conclusion (then the course is ended with EXIT).
+  // Each page as in tests/helpers/riseJourney.js playLessons(). Stops with the visible buttons
+  // listed when no CONTINUE shows up.
   test('V2-E2E1 lessons by scroll + CONTINUE until E2E_UNTIL_LESSON → logout', async ({ page }) => {
     const account = getScormAccount();
     const until = process.env.E2E_UNTIL_LESSON?.trim() || LESSONS.at(-1);
@@ -110,64 +84,8 @@ test.describe('Course journey v2 (E2E)', { tag: '@scorm-full' }, () => {
     });
 
     await test.step(`play lessons until "${until}" is complete`, async () => {
-      // Where the learner is: "Lesson <n> of 80" in the header, as an index into LESSONS (titles
-      // repeat, e.g. "Turning" in Lessons 02 and 03), checked against the sidebar title.
-      const position = async () => {
-        const header = await player.lessonPosition();
-        expect(header, 'lesson header "Lesson <n> of <total>"').toBeTruthy();
-        return /** @type {{ number: number }} */ (header).number - 1;
-      };
-      const untilIndex = LESSONS.indexOf(until);
-      // Scenes with the same prompt (the sign practices) take their answers in order. A run that
-      // resumes in the middle of such a page would be off by the scenes already done: the key's
-      // answer is then refused and found by trying, with a soft failure.
-      const asked = new Map();
-      const keyFor = (question) => {
-        const occurrence = asked.get(question) ?? 0;
-        asked.set(question, occurrence + 1);
-        return answerFor(question, occurrence);
-      };
       try {
-        let index = await position();
-        let lesson = await player.currentLesson();
-        expect(index, `starting lesson "${lesson}" (#${index + 1}) is not in the outline yet`).toBeLessThan(LESSONS.length);
-        expect(lesson, `lesson #${index + 1} in the outline`).toBe(LESSONS[index]);
-        if (index > untilIndex) {
-          log(`already past "${until}", nothing to play`);
-          return;
-        }
-        for (let step = 1; ; step++) {
-          if (lesson === FINAL_LESSON) break; // finished in the next step
-          expect(step, `"${lesson}" not finished within ${MAX_STEPS_PER_LESSON} steps`).toBeLessThanOrEqual(
-            MAX_STEPS_PER_LESSON,
-          );
-          const result = await player.advance({ answerFor: keyFor, sorting: SORTING, playAudio: AUDIO_LESSONS.includes(lesson) });
-          if (result.audio) log(`"${lesson}": played ${result.audio} audio clip(s)`);
-          if (result.flipped) log(`"${lesson}": flipped ${result.flipped} card(s)`);
-          if (result.markers) log(`"${lesson}": clicked ${result.markers} marker(s)`);
-          if (result.steps) log(`"${lesson}": pressed START / next ${result.steps} time(s)`);
-          for (const { question, answer, attempts, expected } of result.answers) {
-            log(`"${lesson}" Q: ${question}\n    A: ${answer} (attempt ${attempts}${expected ? '' : ', not in the key'})`);
-            if (expected) expect.soft(attempts, `key answer for "${question}" was accepted`).toBe(1);
-          }
-          for (const { card, category, attempts, expected } of result.sorted) {
-            log(`"${lesson}" card "${card}" -> ${category} (attempt ${attempts}${expected ? '' : ', not in the key'})`);
-            if (expected) expect.soft(attempts, `key category for card "${card}" was accepted`).toBe(1);
-          }
-          if (result.action === 'continue') {
-            log(`"${lesson}" step ${step}: ${result.label}`);
-            continue;
-          }
-          const next = await player.currentLesson();
-          log(`"${lesson}" done (${result.label}) -> "${next}" | ${await player.progress()}% complete`);
-          if (index === untilIndex) break;
-          const nextIndex = await position();
-          expect(nextIndex, `lesson number after "${lesson}"`).toBe(index + 1);
-          expect(next, `the lesson after "${lesson}"`).toBe(LESSONS[nextIndex]);
-          index = nextIndex;
-          lesson = next;
-          step = 0;
-        }
+        await playLessons({ player, until, log });
       } catch (error) {
         for (const line of player.stackLog) log(line);
         // Discovery aid: the course DOM is not known yet, so keep it for writing the next handler.

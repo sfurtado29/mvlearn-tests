@@ -16,7 +16,7 @@ import { ScormPlayer } from '../../pages/user/ScormPlayer.js';
 import { ScormQuiz } from '../../pages/user/ScormQuiz.js';
 import { ScormPractice } from '../../pages/user/ScormPractice.js';
 import { COURSE } from '../../data/site.js';
-import { SECTIONS } from '../../data/course.js';
+import { COURSE_VERSION, SECTIONS } from '../../data/course.js';
 import { submitLogin } from '../../helpers/login.js';
 import { getValue, waitForSave } from '../../helpers/scormApi.js';
 import { getProbeAccounts } from '../../helpers/accounts.js';
@@ -37,6 +37,8 @@ const allowedHost = TARGET === 'staging' || host === process.env.LOAD_ALLOW_HOST
 test.use({ storageState: { cookies: [], origins: [] }, actionTimeout: 60_000, video: 'off', trace: 'off' });
 
 test.describe('Load probe', { tag: '@load-probe' }, () => {
+  // Storyline (v1) only; the v2 (Rise) probe is probe-v2.spec.js.
+  test.skip(COURSE_VERSION !== 'v1', `the site runs course ${COURSE_VERSION}, not v1`);
   // Group level, so fixture teardown (video/trace) also gets the long timeout.
   test.describe.configure({ timeout: 90 * 60_000 });
 

@@ -17,6 +17,8 @@
     "load:probe": "node scripts/run-load-probe.js",
     "load:summary": "node scripts/load-probe-summary.js",
     "load:k6": "node scripts/run-k6.js",
+    "load:capacity": "node scripts/run-k6.js capacity",
+    "load:stress": "node scripts/run-k6.js stress",
     "load:hybrid": "node scripts/run-hybrid.js",
     "staging:smoke":"node scripts/run-target.js staging --grep @smoke",
     "staging:regression": "node scripts/run-target.js staging --grep @regression"

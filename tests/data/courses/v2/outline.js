@@ -122,6 +122,9 @@ export const LESSONS = [
   'Conclusion',
 ];
 
+/** SCORM version of the package (window.API_1484_11); the k6 learner's saves use its element names. */
+export const SCORM_VERSION = '2004';
+
 /**
  * Lessons whose step blocks need each step's audio played to the end before CONTINUE shows
  * (user, 2026-10-27). Elsewhere the audio is skipped (it is not required, and slow). Card stacks

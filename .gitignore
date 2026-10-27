@@ -8,6 +8,8 @@ node_modules/
 /test-logs/
 
 .env
+# Account lists for the load tests (LOAD_K6_POOL_FILE): credentials, never committed
+/secrets/
 
 # Office lock files (created while a document is open)
 ~$*

@@ -24,3 +24,6 @@ export const SECTION_1_SLIDES = [
 
 /** Menu item of every section's quiz (the title repeats across sections). */
 export const QUIZ_MENU_ITEM = 'End of Section Quiz';
+
+/** SCORM version of the package (window.API); the k6 learner's saves use its element names. */
+export const SCORM_VERSION = '1.2';

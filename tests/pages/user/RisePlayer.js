@@ -187,15 +187,24 @@ function readSorting({ categories, placed }) {
   // The activity: the nearest ancestor of the first category box holding every category plus more text.
   let block = first.parentElement;
   const ignore = new Set([...categories, ...placed]);
+  // The result reads "6/9 Cards Correct" + REPLAY, possibly in separate elements and lines (on
+  // staging, 2026-10-27, it was not recognised as one line and the last card was dragged again).
+  const result = /^(replay|\d+\s*\/\s*\d+(\s*cards\s+correct)?|cards\s+correct)$/i;
   const others = (el) =>
     visibleLeaves(el)
       .map((leaf) => leaf.textContent.trim())
-      .filter((text) => !ignore.has(text) && !/^(replay|\d+\s*\/\s*\d+ cards correct)$/i.test(text));
+      .filter((text) => !ignore.has(text) && !result.test(text));
   while (block && !(categories.every((c) => block.innerText.includes(c)) && others(block).length)) {
     block = block.parentElement;
   }
-  if (!block) return { done: false, card: undefined };
-  return { done: /\d+\s*\/\s*\d+ cards correct/i.test(block.innerText), card: others(block)[0] };
+  const finished = (text) => /cards\s+correct/i.test(text) || /(^|\n)\s*replay\s*(\n|$)/i.test(text);
+  if (!block) {
+    // Nothing but categories and the result left: every card has been placed.
+    let el = first.parentElement;
+    while (el && !categories.every((c) => el.innerText.includes(c))) el = el.parentElement;
+    return { done: !!el?.parentElement && finished(el.parentElement.innerText), card: undefined };
+  }
+  return { done: finished(block.innerText), card: others(block)[0] };
 }
 
 /**
@@ -643,14 +652,23 @@ export class RisePlayer {
       let accepted;
       let attempts = 0;
       for (const category of order) {
+        const source = this.#content.getByText(card, { exact: true }).filter({ visible: true }).first();
+        // Gone after the previous drop: that one was taken, although the check missed it.
+        if (attempts && !(await source.count())) {
+          accepted = order[attempts - 1];
+          break;
+        }
         attempts++;
-        await this.#drag(this.#content.getByText(card, { exact: true }).filter({ visible: true }).first(), zone(category));
+        await this.#drag(source, zone(category));
         await this.page.waitForTimeout(1_500); // drop / bounce-back animation
         const after = await this.#content.evaluate(readSorting, { categories: activity.categories, placed: [...placed] });
         if (after?.done || after?.card !== card) {
           accepted = category;
           break;
         }
+      }
+      if (!accepted && !(await this.#content.getByText(card, { exact: true }).filter({ visible: true }).count())) {
+        accepted = order[attempts - 1];
       }
       if (!accepted) throw new Error(`Sorting: no category took the card "${card}" (tried ${order.join(', ')})`);
       placed.add(card);

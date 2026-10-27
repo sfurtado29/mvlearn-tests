@@ -1,7 +1,11 @@
 // k6 learner: the HTTP side of a learner taking the course, for the load test (docs/load-test.md).
-// k6 does not run Storyline; it sends the requests a browser sends and times the server's answers.
+// k6 does not run the course (Storyline in v1, Rise in v2); it sends the requests a browser sends
+// and times the server's answers. The flow is the same for both packages; only the save's SCORM
+// element names differ (LEARNER_SCORM_VERSION).
 // Run through scripts/run-k6.js (npm run load:k6), which passes everything below as env vars and
 // never puts credentials on the command line.
+//
+// Profiles (steady, hybrid, capacity steps, stress): see "Load profile" below.
 //
 // One iteration = one learner session:
 //   GET login page (logintoken) → POST login (→ testsession) → Dashboard (sesskey) → My courses →
@@ -31,6 +35,9 @@ const DURATION = __ENV.LEARNER_DURATION || '40m';
 const SESSION_MINUTES = Number(__ENV.LEARNER_SESSION_MINUTES || 10);
 const SAVE_INTERVAL_S = Number(__ENV.LEARNER_SAVE_INTERVAL_S || 60);
 const SUSPEND_BYTES = Number(__ENV.LEARNER_SUSPEND_BYTES || 800);
+// SCORM version of the course package (tests/data/courses/<v>/outline.js): the saves use its
+// element names. v1 (Storyline) is 1.2, v2 (Rise) is 2004.
+const SCORM_VERSION = __ENV.LEARNER_SCORM_VERSION || '1.2';
 const OUT_DIR = __ENV.LEARNER_OUT_DIR || '.';
 // Hybrid mode: each VU logs in ONCE and stays until this URL (served by scripts/run-hybrid.js on
 // localhost) says {"stop":true}, i.e. until the browser probes have finished; then it logs out.
@@ -39,14 +46,75 @@ const STOP_URL = __ENV.LEARNER_STOP_URL || '';
 const MAX_DURATION = __ENV.LEARNER_MAX_DURATION || '90m';
 const STOP_CHECK_S = 5;
 
-const ACCOUNTS = String(__ENV.LEARNER_POOL || '')
-  .split(';')
-  .map((entry) => entry.trim())
-  .filter(Boolean)
-  .map((entry) => {
-    const index = entry.indexOf(':');
-    return { username: entry.slice(0, index).trim(), password: entry.slice(index + 1) };
-  });
+// Load profile (LEARNER_PROFILE, set by scripts/run-k6.js):
+//   steady    ramp to LEARNER_VUS, hold LEARNER_DURATION (npm run load:k6)
+//   hybrid    one session per VU until the browser probes finish (LEARNER_STOP_URL; load:hybrid)
+//   capacity  LEARNER_LEVELS ("10,25,50,100"): ramp to each (LEARNER_RAMP) and hold it
+//             (LEARNER_LEVEL_HOLD), one after another; results per level (load:capacity)
+//   stress    the same, with levels rising until the server breaks: k6 stops itself when a level's
+//             error rate reaches LEARNER_ABORT_ERROR_RATE or its login/player p95 reaches
+//             LEARNER_ABORT_P95_MS (load:stress)
+// In capacity and stress every request is tagged with the level being held or ramped to.
+const PROFILE = STOP_URL ? 'hybrid' : __ENV.LEARNER_PROFILE || 'steady';
+const LEVELED = PROFILE === 'capacity' || PROFILE === 'stress';
+const LEVELS = String(__ENV.LEARNER_LEVELS || '')
+  .split(',')
+  .map(Number)
+  .filter((n) => n > 0);
+const LEVEL_HOLD = __ENV.LEARNER_LEVEL_HOLD || '5m';
+const ABORT_ERROR_RATE = Number(__ENV.LEARNER_ABORT_ERROR_RATE || 0.1);
+const ABORT_P95_MS = Number(__ENV.LEARNER_ABORT_P95_MS || 10_000);
+/** Requests whose p95 per level is reported (and, in stress, can stop the run: login and player). */
+const KEY_NAMES = ['login_submit', 'player', 'save'];
+
+/** Level schedule: when each ramp / hold ends (seconds from the start) and its level. */
+const SCHEDULE = [];
+{
+  let t = 0;
+  for (const level of LEVELS) {
+    t += toSeconds(RAMP);
+    SCHEDULE.push({ endS: t, level });
+    t += toSeconds(LEVEL_HOLD);
+    SCHEDULE.push({ endS: t, level });
+  }
+}
+/** The level being held or ramped to right now. */
+function currentLevel() {
+  const s = exec.instance.currentTestRunDuration / 1000;
+  return (SCHEDULE.find((entry) => s < entry.endS) ?? SCHEDULE[SCHEDULE.length - 1]).level;
+}
+/** Tag this VU's next requests with the current level (capacity / stress only). */
+function markLevel() {
+  if (LEVELED) exec.vu.metrics.tags.level = String(currentLevel());
+}
+
+// Accounts: LEARNER_POOL ("user:pass;user:pass"), or LEARNER_POOL_FILE (absolute path, set by
+// scripts/run-k6.js from LOAD_K6_POOL_FILE): one account per line, "username,password" in a .csv
+// (header line skipped), else "username:password"; blank lines and # comments ignored. The runner
+// has already checked the file's format.
+function readPool() {
+  const file = __ENV.LEARNER_POOL_FILE || '';
+  if (!file) {
+    return String(__ENV.LEARNER_POOL || '')
+      .split(';')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const index = entry.indexOf(':');
+        return { username: entry.slice(0, index).trim(), password: entry.slice(index + 1) };
+      });
+  }
+  const separator = /\.csv$/i.test(file) ? ',' : ':';
+  return open(file)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#') && !/^username\s*,\s*password$/i.test(line))
+    .map((line) => {
+      const index = line.indexOf(separator);
+      return { username: line.slice(0, index).trim(), password: line.slice(index + 1).trim().replace(/^"(.*)"$/, '$1') };
+    });
+}
+const ACCOUNTS = readPool();
 
 /** Request names (k6 tag "name"); each gets its own line in the summary. */
 const NAMES = [
@@ -70,25 +138,50 @@ for (const name of NAMES) {
   perName[`http_reqs{name:${name}}`] = ['count>=0'];
 }
 
+// Per-level submetrics. In stress they are the stop conditions (k6 aborts the run when one fails;
+// evaluated per level, so an earlier level's good numbers do not hide a later level's bad ones).
+const perLevel = {};
+for (const level of LEVELED ? LEVELS : []) {
+  const stop = PROFILE === 'stress';
+  perLevel[`http_req_duration{level:${level}}`] = ['max>=0'];
+  perLevel[`http_reqs{level:${level}}`] = ['count>=0'];
+  perLevel[`http_req_failed{level:${level}}`] = stop
+    ? [{ threshold: `rate<${ABORT_ERROR_RATE}`, abortOnFail: true, delayAbortEval: '30s' }]
+    : ['rate>=0'];
+  for (const name of KEY_NAMES) {
+    perLevel[`http_req_duration{level:${level},name:${name}}`] =
+      stop && name !== 'save'
+        ? [{ threshold: `p(95)<${ABORT_P95_MS}`, abortOnFail: true, delayAbortEval: '30s' }]
+        : ['max>=0'];
+  }
+}
+
+/** @returns {object} the k6 scenario of this profile */
+function scenario() {
+  if (PROFILE === 'hybrid') {
+    // One long session per VU, ended by the stop signal (or MAX_DURATION as a safety net).
+    return { executor: 'per-vu-iterations', vus: VUS, iterations: 1, maxDuration: MAX_DURATION };
+  }
+  const stages = LEVELED
+    ? [
+        ...LEVELS.flatMap((level) => [
+          { duration: RAMP, target: level },
+          { duration: LEVEL_HOLD, target: level },
+        ]),
+        { duration: '30s', target: 0 },
+      ]
+    : [
+        { duration: RAMP, target: VUS },
+        { duration: DURATION, target: VUS },
+        { duration: '30s', target: 0 },
+      ];
+  return { executor: 'ramping-vus', startVUs: 0, stages, gracefulRampDown: '2m', gracefulStop: '2m' };
+}
+
 export const options = {
-  scenarios: {
-    learners: STOP_URL
-      ? // One long session per VU, ended by the stop signal (or MAX_DURATION as a safety net).
-        { executor: 'per-vu-iterations', vus: VUS, iterations: 1, maxDuration: MAX_DURATION }
-      : {
-          executor: 'ramping-vus',
-          startVUs: 0,
-          stages: [
-            { duration: RAMP, target: VUS },
-            { duration: DURATION, target: VUS },
-            { duration: '30s', target: 0 },
-          ],
-          gracefulRampDown: '2m',
-          gracefulStop: '2m',
-        },
-  },
+  scenarios: { learners: scenario() },
   summaryTrendStats: ['avg', 'min', 'med', 'p(95)', 'max'],
-  thresholds: perName,
+  thresholds: { ...perName, ...perLevel },
 };
 
 const loginOk = new Rate('learner_login_ok');
@@ -99,10 +192,13 @@ const saves = new Counter('learner_saves');
 
 export function setup() {
   if (!BASE) fail('BASE_URL is not set (run through scripts/run-k6.js)');
-  if (!ACCOUNTS.length) fail('LEARNER_POOL is empty: add LOAD_K6_POOL to .env');
+  if (!ACCOUNTS.length) fail('No k6 accounts: set LOAD_K6_POOL or LOAD_K6_POOL_FILE in .env');
   if (!COURSE_ID || !SCORM_CMID) fail('LEARNER_COURSE_ID / LEARNER_SCORM_CMID are not set');
-  if (ACCOUNTS.length < VUS) {
-    console.warn(`Only ${ACCOUNTS.length} k6 accounts for ${VUS} VUs: some VUs share an account.`);
+  if (!['1.2', '2004'].includes(SCORM_VERSION)) fail(`LEARNER_SCORM_VERSION "${SCORM_VERSION}": use 1.2 or 2004`);
+  if (LEVELED && !LEVELS.length) fail(`${PROFILE}: LEARNER_LEVELS is empty (e.g. "10,25,50,100")`);
+  const peak = LEVELED ? Math.max(...LEVELS) : VUS;
+  if (ACCOUNTS.length < peak) {
+    console.warn(`Only ${ACCOUNTS.length} k6 accounts for ${peak} VUs: some VUs share an account.`);
   }
 }
 
@@ -131,13 +227,33 @@ const scormTime = (seconds) => {
   return `${String(h).padStart(4, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.00`;
 };
 const filler = 'k6'.repeat(Math.ceil(SUSPEND_BYTES / 2)).slice(0, SUSPEND_BYTES);
-/** "90s" / "1m" / "1h" → seconds. */
-const toSeconds = (text) => {
+/**
+ * The SCORM elements of one save, in Moodle's datamodel.php format ("." written as "__"; the same
+ * for 2004, checked in Moodle's datamodels/scorm_13.js on dev, 2026-10-27).
+ *   1.2:  cmi.core.lesson_status, cmi.core.exit, cmi.core.session_time "HHHH:MM:SS.SS", cmi.suspend_data
+ *   2004: cmi.completion_status, cmi.exit, cmi.session_time ISO 8601 "PT60S", cmi.suspend_data
+ */
+const saveElements = () =>
+  SCORM_VERSION === '2004'
+    ? {
+        cmi__completion_status: 'incomplete',
+        cmi__exit: 'suspend',
+        cmi__session_time: `PT${SAVE_INTERVAL_S}S`,
+        cmi__suspend_data: filler,
+      }
+    : {
+        cmi__core__lesson_status: 'incomplete',
+        cmi__core__exit: 'suspend',
+        cmi__core__session_time: scormTime(SAVE_INTERVAL_S),
+        cmi__suspend_data: filler,
+      };
+/** "90s" / "1m" / "1h" → seconds. A function declaration: the level schedule above uses it. */
+function toSeconds(text) {
   const match = /^(\d+(?:\.\d+)?)(ms|s|m|h)?$/.exec(String(text).trim());
   if (!match) return 60;
   const value = Number(match[1]);
   return { ms: value / 1000, s: value, m: value * 60, h: value * 3600 }[match[2] || 's'];
-};
+}
 /**
  * Hybrid mode: true once the runner says stop. If the runner's flag cannot be reached any more
  * (it stopped or crashed), stop too rather than run until MAX_DURATION.
@@ -153,6 +269,7 @@ export default function () {
   if (STOP_URL && VUS > 1) sleep(((exec.vu.idInTest - 1) * toSeconds(RAMP)) / VUS);
   // A fresh session every iteration, like a learner opening the site.
   http.cookieJar().clear(BASE);
+  markLevel();
 
   // --- login -----------------------------------------------------------------------------------
   const loginPage = http.get(`${BASE}/login/index.php`, { tags: { name: 'login_page' } });
@@ -167,11 +284,12 @@ export default function () {
   for (let hop = 0; hop < 5 && login.status >= 300 && login.status < 400; hop++) {
     const location = login.headers.Location || login.headers.location || '';
     const next = location.startsWith('http') ? location : `${BASE}${location}`;
-    const dashboard = /\/my\/(\?|#|$)/.test(next);
+    // The Dashboard, or My courses for an account whose home page is set to it (seen on dev, 2026-10-26).
+    const dashboard = /\/my\/(courses\.php)?(\?|#|$)/.test(next);
     login = http.get(next, { redirects: 0, tags: { name: dashboard ? 'dashboard' : 'login_submit' } });
   }
   const loggedIn = check(login, {
-    'login: lands on the Dashboard': (r) => r.status === 200 && /\/my\/(\?|#|$)/.test(r.url),
+    'login: lands on the Dashboard': (r) => r.status === 200 && /\/my\/(courses\.php)?(\?|#|$)/.test(r.url),
     'login: no "Invalid login"': (r) => !/Invalid login/.test(String(r.body)),
   });
   loginOk.add(loggedIn);
@@ -232,20 +350,10 @@ export default function () {
       continue;
     }
     nextSave += SAVE_INTERVAL_S * 1000;
+    markLevel();
     const res = http.post(
       `${BASE}/mod/scorm/datamodel.php`,
-      {
-        id: SCORM_CMID,
-        a,
-        sesskey,
-        attempt,
-        scoid,
-        // SCORM 1.2 element names with "." written as "__" (Moodle's datamodel.php format).
-        cmi__core__lesson_status: 'incomplete',
-        cmi__core__exit: 'suspend',
-        cmi__core__session_time: scormTime(SAVE_INTERVAL_S),
-        cmi__suspend_data: filler,
-      },
+      { id: SCORM_CMID, a, sesskey, attempt, scoid, ...saveElements() },
       { tags: { name: 'save' } },
     );
     const ok = check(res, { 'save: accepted ("true")': (r) => r.status === 200 && /^\s*true/.test(String(r.body)) });
@@ -267,6 +375,7 @@ export default function () {
  */
 function logout(sesskey) {
   if (!sesskey) return;
+  markLevel();
   const host = BASE.replace(/^https?:\/\//, '').split('/')[0];
   let res = http.get(`${BASE}/login/logout.php?sesskey=${sesskey}`, { redirects: 0, tags: { name: 'logout' } });
   for (let hop = 0; hop < 3 && res.status >= 300 && res.status < 400; hop++) {
@@ -278,10 +387,84 @@ function logout(sesskey) {
 }
 
 // --- summary -----------------------------------------------------------------------------------
+const sec = (ms) => (typeof ms === 'number' ? `${(ms / 1000).toFixed(ms < 10_000 ? 3 : 1)} s` : '–');
+const pct = (rate) => (typeof rate === 'number' ? `${Math.round(rate * 100)}%` : '–');
+
+/**
+ * Per level: requests, requests/s over the level's ramp + hold, error rate, p50 / p95 of all
+ * requests and p95 of login, player and save. A level without requests was not reached.
+ * @param {(key: string) => any} metric
+ */
+function levelRows(metric) {
+  const seconds = toSeconds(RAMP) + toSeconds(LEVEL_HOLD);
+  return LEVELS.map((level) => {
+    const all = metric(`http_req_duration{level:${level}}`);
+    const failed = metric(`http_req_failed{level:${level}}`);
+    const count = metric(`http_reqs{level:${level}}`);
+    const key = Object.fromEntries(
+      KEY_NAMES.map((name) => {
+        const m = metric(`http_req_duration{level:${level},name:${name}}`);
+        return [name, m ? m['p(95)'] : null];
+      }),
+    );
+    const requests = count ? count.count : 0;
+    return {
+      level,
+      reached: requests > 0,
+      requests,
+      requestsPerSecond: requests / seconds,
+      errorRate: failed ? failed.rate : null,
+      p50: all ? all.med : null,
+      p95: all ? all['p(95)'] : null,
+      p95ByName: key,
+    };
+  });
+}
+
+/**
+ * The verdict: the highest level that stayed healthy (errors and login/player p95 below the stop
+ * limits) and the first level whose p95 was more than twice the first level's.
+ * @param {ReturnType<typeof levelRows>} rows
+ */
+function levelVerdict(rows) {
+  const reached = rows.filter((row) => row.reached);
+  const healthy = (row) =>
+    (row.errorRate ?? 0) < ABORT_ERROR_RATE &&
+    ['login_submit', 'player'].every((name) => (row.p95ByName[name] ?? 0) < ABORT_P95_MS);
+  const lastHealthy = reached.filter(healthy).pop();
+  const baseP95 = reached[0] ? reached[0].p95 : null;
+  const firstSlower = baseP95 ? reached.find((row) => row.p95 > 2 * baseP95) : undefined;
+  return {
+    highestLevelReached: reached.length ? reached[reached.length - 1].level : null,
+    highestHealthyLevel: lastHealthy ? lastHealthy.level : null,
+    firstLevelTwiceAsSlow: firstSlower ? firstSlower.level : null,
+    // Stress stops itself at the first unhealthy level; capacity simply runs every level.
+    stoppedEarly: reached.length < rows.length,
+  };
+}
+
+/** @param {ReturnType<typeof levelRows>} rows @param {any} result */
+function levelMarkdown(rows, result) {
+  return [
+    '| Level (VUs) | Requests | Req/s | Errors | p50 | p95 | p95 login | p95 player | p95 save |',
+    '|---|---|---|---|---|---|---|---|---|',
+    ...rows.map((r) =>
+      r.reached
+        ? `| ${r.level} | ${r.requests} | ${r.requestsPerSecond.toFixed(2)} | ${pct(r.errorRate)} | ${sec(r.p50)} | ${sec(r.p95)} | ${sec(r.p95ByName.login_submit)} | ${sec(r.p95ByName.player)} | ${sec(r.p95ByName.save)} |`
+        : `| ${r.level} | not reached | | | | | | | |`,
+    ),
+    '',
+    `- Highest level reached: **${result.highestLevelReached ?? '–'} VUs**${result.stoppedEarly ? ' (stopped early)' : ''}`,
+    `- Highest healthy level (errors < ${pct(ABORT_ERROR_RATE)}, login/player p95 < ${sec(ABORT_P95_MS)}): **${result.highestHealthyLevel ?? 'none'} VUs**`,
+    `- First level with p95 over twice the first level's: **${result.firstLevelTwiceAsSlow ?? 'none'}**`,
+    '',
+    'Requests are tagged with the level being held or ramped to, so a level includes its ramp.',
+    '',
+  ];
+}
+
 export function handleSummary(data) {
   const metric = (key) => (data.metrics[key] ? data.metrics[key].values : null);
-  const sec = (ms) => (typeof ms === 'number' ? `${(ms / 1000).toFixed(ms < 10_000 ? 3 : 1)} s` : '–');
-  const pct = (rate) => (typeof rate === 'number' ? `${Math.round(rate * 100)}%` : '–');
   const rows = NAMES.map((name) => {
     const duration = metric(`http_req_duration{name:${name}}`);
     const waiting = metric(`http_req_waiting{name:${name}}`);
@@ -301,9 +484,19 @@ export function handleSummary(data) {
   // Only requests to the site (not the hybrid runner's local stop-flag checks, tagged "control").
   const totalRequests = rows.reduce((sum, row) => sum + row.count, 0);
   const runSeconds = data.state && data.state.testRunDurationMs ? data.state.testRunDurationMs / 1000 : null;
-  const mode = STOP_URL ? 'one session per VU, until the browser probes finished' : `${DURATION}, ${SESSION_MINUTES}-min sessions`;
+  const mode = {
+    hybrid: 'one session per VU, until the browser probes finished',
+    steady: `${DURATION}, ${SESSION_MINUTES}-min sessions`,
+    capacity: `capacity steps ${LEVELS.join(' → ')} VUs, ${RAMP} ramp + ${LEVEL_HOLD} hold each`,
+    stress: `stress ${LEVELS[0]} → ${LEVELS[LEVELS.length - 1]} VUs, ${RAMP} ramp + ${LEVEL_HOLD} hold each, stops at ≥ ${pct(ABORT_ERROR_RATE)} errors or login/player p95 ≥ ${sec(ABORT_P95_MS)}`,
+  }[PROFILE];
+  const levels = LEVELED ? levelRows(metric) : [];
   const result = {
+    profile: PROFILE,
     vus: VUS,
+    scormVersion: SCORM_VERSION,
+    levels,
+    ...(LEVELED ? levelVerdict(levels) : {}),
     mode,
     runMinutes: runSeconds ? Math.round(runSeconds / 6) / 10 : null,
     duration: DURATION,
@@ -318,11 +511,14 @@ export function handleSummary(data) {
     saves: metric('learner_saves') ? metric('learner_saves').count : 0,
     requests: rows,
   };
+  const heading = LEVELED ? `# k6 ${PROFILE} summary (${mode}` : `# k6 summary (${VUS} VU${VUS === 1 ? '' : 's'}, ${mode}`;
   const md = [
-    `# k6 summary (${VUS} VU${VUS === 1 ? '' : 's'}, ${mode}${result.runMinutes ? `; ran ${result.runMinutes} min` : ''})`,
+    `${heading}${result.runMinutes ? `; ran ${result.runMinutes} min` : ''})`,
+    ...(LEVELED ? ['', ...levelMarkdown(levels, result)] : []),
     '',
     '| | |',
     '|---|---|',
+    `| SCORM saves as | ${SCORM_VERSION} |`,
     `| Requests | ${result.totalRequests} (${result.requestsPerSecond ? result.requestsPerSecond.toFixed(2) : '–'}/s) |`,
     `| Login OK | ${pct(result.loginOk)} |`,
     `| Player OK | ${pct(result.playerOk)} |`,

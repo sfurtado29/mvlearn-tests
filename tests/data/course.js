@@ -1,7 +1,7 @@
 // Content of the course package the site runs, one folder per version under tests/data/courses/
 // (outline.js, quiz-answers.js, practice.js):
-//   v1: the original package (Storyline; staging; dev until the client's update of 2026-10).
-//   v2: the client's new package (Rise; dev from 2026-10). Outline and answers, lesson by lesson.
+//   v1: the original package (Storyline; dev and staging until the client's update of 2026-10).
+//   v2: the client's new package (Rise; dev from 2026-10, staging from 2026-10-27).
 // Chosen by courseVersion in tests/data/site.js; COURSE_VERSION=<v> (env or .env) overrides it,
 // e.g. once staging gets the new package. Import course content from here, not from the folders.
 import { COURSE } from './site.js';
@@ -26,8 +26,9 @@ if (!VERSIONS[COURSE_VERSION]) {
 export const ANSWERS_FILE = `tests/data/courses/${COURSE_VERSION}/quiz-answers.js`;
 
 // v1 only: SECTION_1_SLIDES, QUIZ_MENU_ITEM, saveDiscovered, practiceHandlers.
-// v2 only: LESSONS, AUDIO_LESSONS, SORTING. answerFor: both (see VERSIONS).
+// v2 only: LESSONS, AUDIO_LESSONS, SORTING. answerFor, SCORM_VERSION: both (see VERSIONS).
 export const {
+  SCORM_VERSION,
   SECTIONS,
   SECTION_1_SLIDES,
   QUIZ_MENU_ITEM,

@@ -13,10 +13,12 @@ const baselineDir = rest.includes('--baseline') ? rest[rest.indexOf('--baseline'
 
 /**
  * Rows of the summary table, in the order the journey happens:
- *   login → open_course → launch → section_1 … section_7 → wait_save → exit → resume → logout.
- * section_N is the time to complete section N; the rows slide, practice, begin_quiz, quiz_answer
- * and save are the individual actions inside the sections (all sections together). journey is
- * the whole run. Anything else recorded is listed at the end.
+ *   v1: login → open_course → launch → section_1 … section_7 → wait_save → exit → resume → logout.
+ *   v2: login → open_course → launch → section_1 → exit → resume → section_2 … section_7 → finish
+ *       → exit → logout.
+ * section_N is the time to complete section (v2: lesson) N; the rows slide, practice, begin_quiz,
+ * quiz_answer (v1) and page (v2, one row per lesson page) and save are the individual actions
+ * inside them. journey is the whole run. Anything else recorded is listed at the end.
  */
 const STEP_ORDER = [
   'login',
@@ -33,8 +35,10 @@ const STEP_ORDER = [
   'practice',
   'begin_quiz',
   'quiz_answer',
+  'page',
   'save',
   'wait_save',
+  'finish',
   'exit',
   'resume',
   'logout',
@@ -81,17 +85,23 @@ function summarise(dir) {
       add('save', s.ms);
     }
     // Section durations from the "section_complete" marks (time since the previous one / the launch).
+    // v2 leaves and relaunches after section 1, so section 2 starts at the end of the "resume" step.
     const launchEnd = (probe.timings ?? []).find((t) => t.step === 'launch' && t.ok);
+    const resumeEnd = (probe.timings ?? []).find((t) => t.step === 'resume' && t.ok);
     let previous = launchEnd ? Date.parse(launchEnd.end) : null;
     for (const mark of (probe.marks ?? []).filter((m) => m.event === 'section_complete')) {
       const at = Date.parse(mark.at);
+      if (resumeEnd && Date.parse(resumeEnd.end) < at && Date.parse(resumeEnd.end) > (previous ?? 0)) {
+        previous = Date.parse(resumeEnd.end);
+      }
       if (previous !== null) add(`section_${mark.number}`, at - previous);
       previous = at;
     }
     if (probe.passed) add('journey', probe.durationMs);
     if (probe.checks && 'resumedAt' in probe.checks) {
       resumeTried++;
-      if (probe.checks.resumedAt === 'End') resumeOk++;
+      // v1 resumes at its last slide "End"; v2 records where it should resume (resumeExpected).
+      if (probe.checks.resumedAt === (probe.checks.resumeExpected ?? 'End')) resumeOk++;
     }
     for (const e of probe.httpErrors ?? []) {
       const key = `${e.status} ${e.statusText} ${e.method} ${e.path}`.replace(/\s+/g, ' ').trim();
@@ -198,10 +208,11 @@ if (summary.failures.length) {
   for (const f of summary.failures) md.push(`- ${f.username}: ${String(f.error).split('\n')[0]}`);
 }
 md.push('');
-md.push('Notes: rows follow the journey. section_N = time to complete section N. slide, practice,');
-md.push('begin_quiz, quiz_answer and save are the actions inside all sections ("slide" is mostly narration');
-md.push('time, not server time; "save" is the server response time of each POST /mod/scorm/datamodel.php).');
-md.push('journey = the whole run, for probes that passed.');
+md.push('Notes: rows follow the journey. section_N = time to complete section N (v2: lesson N). slide,');
+md.push('practice, begin_quiz, quiz_answer (v1) and page (v2: one lesson page, including its required audio)');
+md.push('and save are the actions inside all sections ("slide" is mostly narration time, not server time;');
+md.push('"save" is the server response time of each POST /mod/scorm/datamodel.php). finish (v2) = the');
+md.push('Conclusion page and EXIT. journey = the whole run, for probes that passed.');
 
 const text = md.join('\n');
 fs.writeFileSync(path.join(runDirArg, 'summary.md'), `${text}\n`);

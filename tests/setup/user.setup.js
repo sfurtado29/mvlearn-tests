@@ -6,6 +6,7 @@ setup('authenticate', async ({ page }) => {
   const loginPage = new LoginPage(page);
   await loginPage.goto();
   await loginPage.login(process.env.APP_USERNAME, process.env.APP_PASSWORD);
-  await expect(page).toHaveURL(/\/my\/$/);
+  // Dashboard, or My courses: dev and staging land there since 2026-10 (new default home page).
+  await expect(page).toHaveURL(/\/my\/(courses\.php)?$/);
   await page.context().storageState({ path: authFile });
 });

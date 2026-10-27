@@ -18,7 +18,9 @@ const SITES = {
     englishScormId: 6,
     // Staging's language names include the course name: "License Renewal Course(English)".
     launchLinkName: 'Begin Course (License Renewal Course(English))',
-    courseVersion: 'v1',
+    // The client's new package (Rise) reached staging on 2026-10-27 (user). The ids above are
+    // from v1 (2026-10-21) and not re-checked yet.
+    courseVersion: 'v2',
   },
 };
 
