@@ -7,9 +7,8 @@ const SITES = {
     teacher: 'Admin User',
     englishScormId: 2,
     launchLinkName: 'Begin Course (English)',
-    // Course package (tests/data/course.js). Dev has the client's new package (2026-10); switch
-    // to 'v2' once tests/data/courses/v2 exists.
-    courseVersion: 'v1',
+    // Course package (tests/data/course.js). Dev has the client's new package (Rise) since 2026-10.
+    courseVersion: 'v2',
   },
   'st-mvlearn.verificient.com': {
     // All verified on staging 2026-10-21 (as sxts_user1). The old "Renwal" typo has been fixed.

@@ -7,6 +7,7 @@ import { LoginPage } from '../../pages/common/LoginPage.js';
 import { COURSE } from '../../data/site.js';
 import { getScormAccount } from '../../helpers/accounts.js';
 import { getApiVersion, getValue } from '../../helpers/scormApi.js';
+import { COURSE_VERSION } from '../../data/course.js';
 
 const account = getScormAccount();
 if (!account.isAppAccount) test.use({ storageState: { cookies: [], origins: [] } });
@@ -22,6 +23,8 @@ const fingerprint = (text) => {
 };
 
 test('SCORM player spike', { tag: '@spike' }, async ({ page }) => {
+  // Storyline (v1) only.
+  test.skip(COURSE_VERSION !== 'v1', `the site runs course ${COURSE_VERSION}, not v1`);
   test.setTimeout(10 * 60_000);
   const t0 = Date.now();
   const log = (...args) => console.log(`[spike ${seconds(t0)}s]`, ...args);

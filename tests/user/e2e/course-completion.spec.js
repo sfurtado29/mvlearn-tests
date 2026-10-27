@@ -14,7 +14,7 @@ import { ScormPlayer } from '../../pages/user/ScormPlayer.js';
 import { ScormQuiz } from '../../pages/user/ScormQuiz.js';
 import { ScormPractice } from '../../pages/user/ScormPractice.js';
 import { COURSE } from '../../data/site.js';
-import { SECTIONS, SECTION_1_SLIDES, QUIZ_MENU_ITEM } from '../../data/course.js';
+import { COURSE_VERSION, SECTIONS, SECTION_1_SLIDES, QUIZ_MENU_ITEM } from '../../data/course.js';
 import { submitLogin } from '../../helpers/login.js';
 import { getValue } from '../../helpers/scormApi.js';
 import { getE2EAccount } from '../../helpers/accounts.js';
@@ -29,6 +29,8 @@ const SECTION_1 = SECTIONS[0];
 const MAX_STEPS = 25;
 
 test.describe('Course journey (E2E)', { tag: '@scorm-full' }, () => {
+  // Storyline (v1) only; the v2 (Rise) journey is course-v2.spec.js.
+  test.skip(COURSE_VERSION !== 'v1', `the site runs course ${COURSE_VERSION}, not v1`);
   // Set at group level (not only test.setTimeout): fixture teardown, e.g. saving a long trace or
   // video, otherwise gets just the default 30 s (a full-course run failed that way, 2026-10-13).
   test.describe.configure({ timeout: 130 * 60_000 });
